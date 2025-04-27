@@ -41,7 +41,7 @@ config: DrawConfig = plugin.get_config(DrawConfig)
 
 
 @plugin.mount_sandbox_method(SandboxMethodType.TOOL, name="绘图", description="支持文生图和图生图")
-async def draw(
+async def gemini_draw(
     _ctx: AgentCtx,
     prompt: str,
     size: str = "1024x1024",
@@ -69,10 +69,10 @@ async def draw(
 
     Examples:
         # Generate new image
-        send_msg_file(chat_key, draw("a illustration style cute orange cat napping on a sunny windowsill, watercolor painting style", "1024x1024"))
+        send_msg_file(chat_key, gemini_draw("a illustration style cute orange cat napping on a sunny windowsill, watercolor painting style", "1024x1024"))
 
         # Modify existing image
-        send_msg_file(chat_key, draw("change the background to a cherry blossom park, keep the anime style", "1024x1024", "shared/refer_image.jpg"))
+        send_msg_file(chat_key, gemini_draw("change the background to a cherry blossom park, keep the anime style", "1024x1024", "shared/refer_image.jpg"))
     """
     global last_successful_mode
     # logger.info(f"绘图提示: {prompt}")

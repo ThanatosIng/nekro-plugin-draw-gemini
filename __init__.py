@@ -40,7 +40,7 @@ class DrawConfig(ConfigBase):
 config: DrawConfig = plugin.get_config(DrawConfig)
 
 
-@plugin.mount_sandbox_method(SandboxMethodType.TOOL, name="绘图", description="支持文生图和图生图")
+@plugin.mount_sandbox_method(SandboxMethodType.TOOL, name="gemini绘图", description="支持文生图和图生图")
 async def gemini_draw(
     _ctx: AgentCtx,
     prompt: str,

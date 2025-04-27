@@ -1,112 +1,156 @@
-"""这是一个示例天气查询插件
-
-提供指定城市的天气查询功能。
-使用 wttr.in API 获取天气数据。
-"""
-
-from typing import Dict
-
-import httpx
-from nekro_agent.api.schemas import AgentCtx
-from nekro_agent.core import logger
-from nekro_agent.services.plugin.base import ConfigBase, NekroPlugin, SandboxMethodType
+import base64
+import re
+from pathlib import Path
+from typing import Optional
+import aiofiles
+import magic
+from httpx import AsyncClient, Timeout
 from pydantic import Field
+from nekro_agent.api.core import logger
+from nekro_agent.api.schemas import AgentCtx
+from nekro_agent.core.config import config as global_config
+from nekro_agent.services.agent.creator import ContentSegment, OpenAIChatMessage
+from nekro_agent.services.plugin.base import ConfigBase, NekroPlugin, SandboxMethodType
+from nekro_agent.tools.path_convertor import convert_to_host_path
 
-# TODO: 插件元信息，请修改为你的插件信息
 plugin = NekroPlugin(
-    name="天气查询插件",  # TODO: 插件名称
-    module_name="weather",  # TODO: 插件模块名 (如果要发布该插件，需要在 NekroAI 社区中唯一)
-    description="提供指定城市的天气查询功能",  # TODO: 插件描述
-    version="1.0.0",  # TODO: 插件版本
-    author="KroMiose",  # TODO: 插件作者
-    url="https://github.com/KroMiose/nekro-plugin-template",  # TODO: 插件仓库地址
+    name="gemini绘画插件",
+    module_name="draw",
+    description="gemini绘画插件",
+    version="0.1.0",
+    author="Thanatos",
+    url="https://github.com/ThanatosIng/nekro-plugin-draw-gemini",
 )
 
 
-# TODO: 插件配置，根据需要修改
 @plugin.mount_config()
-class WeatherConfig(ConfigBase):
-    """天气查询配置"""
+class DrawConfig(ConfigBase):
+    """绘画配置"""
 
-    API_URL: str = Field(
-        default="https://wttr.in/",
-        title="天气API地址",
-        description="天气查询API的基础URL",
+    USE_DRAW_MODEL_GROUP: str = Field(
+        default="default-draw-chat",
+        title="绘图模型组",
+        json_schema_extra={"ref_model_groups": True, "required": True},
+        description="主要使用的绘图模型组，可在 `系统配置` -> `模型组` 选项卡配置",
     )
-    TIMEOUT: int = Field(
-        default=10,
-        title="请求超时时间",
-        description="API请求的超时时间(秒)",
-    )
+    NUM_INFERENCE_STEPS: int = Field(default=20, title="模型推理步数")
 
 
-# 获取配置实例
-config: WeatherConfig = plugin.get_config(WeatherConfig)
+# 获取配置
+config: DrawConfig = plugin.get_config(DrawConfig)
 
 
-@plugin.mount_sandbox_method(SandboxMethodType.AGENT, name="查询天气", description="查询指定城市的实时天气信息")
-async def query_weather(_ctx: AgentCtx, city: str) -> str:
-    """查询指定城市的实时天气信息。
+@plugin.mount_sandbox_method(SandboxMethodType.TOOL, name="绘图", description="支持文生图和图生图")
+async def draw(
+    _ctx: AgentCtx,
+    prompt: str,
+    size: str = "1024x1024",
+    refer_image: str = "",
+) -> str:
+    """Generate or modify images
 
     Args:
-        city: 需要查询天气的城市名称，例如 "北京", "London"。
+        prompt (str): Natural language description of the image you want to create. (Only supports English)
+            Suggested elements to include:
+            - Type of drawing (e.g., character setting, landscape, comics, etc.)
+            - What to draw details (characters, animals, objects, etc.)
+            - What they are doing or their state
+            - The scene or environment
+            - Overall mood or atmosphere
+            - Very detailed description or story (optional, recommend for comics)
+            - Art style (e.g., illustration, watercolor... any style you want)
+
+        size (str): Image dimensions (e.g., "1024x1024" square, "512x768" portrait, "768x512" landscape)
+        guidance_scale (float): Guidance scale for the image generation, lower is more random, higher is more like the prompt (default: 7.5, from 0 to 20)
+        refer_image (str): Optional source image path for image reference (useful for image style transfer or keep the elements of the original image)
 
     Returns:
-        str: 包含城市实时天气信息的字符串。查询失败时返回错误信息。
+        str: Generated image URL
 
-    Example:
-        查询北京的天气:
-        query_weather(city="北京")
-        查询伦敦的天气:
-        query_weather(city="London")
+    Examples:
+        # Generate new image
+        send_msg_file(chat_key, draw("a illustration style cute orange cat napping on a sunny windowsill, watercolor painting style", "1024x1024"))
+
+        # Modify existing image
+        send_msg_file(chat_key, draw("change the background to a cherry blossom park, keep the anime style", "1024x1024", "shared/refer_image.jpg"))
     """
-    try:
-        async with httpx.AsyncClient(timeout=config.TIMEOUT) as client:
-            response = await client.get(f"{config.API_URL}{city}?format=j1")
-            response.raise_for_status()
-            data: Dict = response.json()
-
-        # 提取需要的天气信息
-        # wttr.in 的 JSON 结构可能包含 current_condition 列表
-        if not data.get("current_condition"):
-            logger.warning(f"城市 '{city}' 的天气数据格式不符合预期，缺少 'current_condition'")
-            return f"未能获取到城市 '{city}' 的有效天气数据，请检查城市名称是否正确。"
-
-        # 处理获取到的天气数据
-        current_condition = data["current_condition"][0]
-        temp_c = current_condition.get("temp_C")
-        feels_like_c = current_condition.get("FeelsLikeC")
-        humidity = current_condition.get("humidity")
-        weather_desc_list = current_condition.get("weatherDesc", [])
-        weather_desc = weather_desc_list[0].get("value") if weather_desc_list else "未知"
-        wind_speed_kmph = current_condition.get("windspeedKmph")
-        wind_dir = current_condition.get("winddir16Point")
-        visibility = current_condition.get("visibility")
-        pressure = current_condition.get("pressure")
-
-        # 格式化返回结果
-        result = (
-            f"城市: {city}\n"
-            f"天气状况: {weather_desc}\n"
-            f"温度: {temp_c}°C\n"
-            f"体感温度: {feels_like_c}°C\n"
-            f"湿度: {humidity}%\n"
-            f"风向: {wind_dir}\n"
-            f"风速: {wind_speed_kmph} km/h\n"
-            f"能见度: {visibility} km\n"
-            f"气压: {pressure} hPa"
-        )
-        logger.info(f"已查询到城市 '{city}' 的天气")
-    except Exception as e:
-        # 捕获其他所有未知异常
-        logger.exception(f"查询城市 '{city}' 天气时发生未知错误: {e}")
-        return f"查询 '{city}' 天气时发生内部错误。"
+    global last_successful_mode
+    # logger.info(f"绘图提示: {prompt}")
+    # logger.info(f"绘图尺寸: {size}")
+    logger.info(f"使用绘图模型组: {config.USE_DRAW_MODEL_GROUP} 绘制: {prompt}")
+    if refer_image:
+        async with aiofiles.open(
+            convert_to_host_path(Path(refer_image), chat_key=_ctx.from_chat_key, container_key=_ctx.container_key),
+            mode="rb",
+        ) as f:
+            image_data = await f.read()
+            mime_type = magic.from_buffer(image_data, mime=True)
+            image_data = base64.b64encode(image_data).decode("utf-8")
+        source_image_data = f"data:{mime_type};base64,{image_data}"
     else:
-        return result
+        source_image_data = "data:image/webp;base64, XXX"
+    if config.USE_DRAW_MODEL_GROUP not in global_config.MODEL_GROUPS:
+        raise Exception(f"绘图模型组 `{config.USE_DRAW_MODEL_GROUP}` 未配置")
+    model_group = global_config.MODEL_GROUPS[config.USE_DRAW_MODEL_GROUP]
+
+    return await _chat_image(model_group, prompt, size, refer_image, source_image_data)
+
+
+async def _chat_image(model_group, prompt, size, refer_image, source_image_data):
+    """使用聊天模式绘图"""
+    msg = OpenAIChatMessage.create_empty("user")
+    if refer_image:
+        msg = msg.add(ContentSegment.image_content(source_image_data))
+        msg = msg.add(
+            ContentSegment.text_content(
+                f"You are a professional painter. Use your high-quality drawing skills to draw a picture based on the user's description. Just provide the image and do not ask for more information. Carefully analyze the above image and make a picture based on the following description: {prompt} (size: {size})",
+            ),
+        )
+    else:
+        msg = msg.add(
+            ContentSegment.text_content(
+                f"You are a professional painter. Use your high-quality drawing skills to draw a picture based on the user's description. Just provide the image and do not ask for more information. Make a picture based on the following description: {prompt} (size: {size})"
+            ),
+        )
+    async with AsyncClient() as client:
+        response = await client.post(
+            f"{model_group.BASE_URL}/chat/completions",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {model_group.API_KEY}",
+            },
+            json={
+                "model": model_group.CHAT_MODEL,
+                "messages": [
+                    msg.to_dict(),
+                ],
+            },
+            timeout=Timeout(read=60, write=60, connect=10, pool=10),
+        )
+        response.raise_for_status()
+        data = response.json()
+    # logger.info(f"绘图响应: {data}")
+    content = data["choices"][0]["message"]["content"]
+    if content:
+        logger.info(f"绘图地址: {content}")
+        ret_file_url = re.search(r"!\[\w+?\]\((.*?)\)", content)
+        if ret_file_url:
+            ret_file_url = ret_file_url.group(1)
+        else:
+            logger.error(f"绘图响应中未找到图片信息: {data}")
+            raise Exception(
+                "No image found in image generation AI response. You can adjust the prompt and try again. Make sure the prompt is clear and detailed.",
+            )
+    else:
+        logger.error(f"绘图响应中未找到图片信息: {data}")
+        raise Exception(
+            "No image found in image generation AI response. You can adjust the prompt and try again. Make sure the prompt is clear and detailed.",
+        )
+    return ret_file_url
 
 
 @plugin.mount_cleanup_method()
 async def clean_up():
-    """清理插件资源"""
-    # 如果有使用数据库连接、文件句柄或其他需要释放的资源，在此处添加清理逻辑
-    logger.info("天气查询插件资源已清理。")
+    """清理插件"""
+    logger.info("gemini绘画插件插件已清理完毕")

@@ -15,7 +15,7 @@ from nekro_agent.tools.path_convertor import convert_to_host_path
 
 plugin = NekroPlugin(
     name="gemini绘画插件",
-    module_name="draw",
+    module_name="nekro_plugin_draw_gemini",
     description="gemini绘画插件",
     version="0.1.0",
     author="Thanatos",

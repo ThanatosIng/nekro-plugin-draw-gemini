@@ -134,7 +134,8 @@ async def _chat_image(model_group, prompt, size, refer_image, source_image_data)
     content = data["choices"][0]["message"]["content"]
     if content:
         logger.info(f"绘图地址: {content}")
-        ret_file_url = re.search(r"!\[\w+?\]\((.*?)\)", content)
+        pattern = r"!\[.*?\]\((.*?)\)"  # 匹配 Markdown 图片语法
+        ret_file_url = re.search(pattern, content)
         if ret_file_url:
             ret_file_url = ret_file_url.group(1)
         else:
